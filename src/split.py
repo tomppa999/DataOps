@@ -53,7 +53,12 @@ def main() -> None:
         batches.append(df.iloc[start : start + size])
         start += size
 
-    # 7. Write to data/processed/batch_1.csv, etc.
+    # 7. Add overlapping data: append first 2 rows of each batch to the previous one
+    for i in range(4):
+        overlap = batches[i + 1].head(2)
+        batches[i] = pd.concat([batches[i], overlap], ignore_index=True)
+
+    # 8. Write to data/raw_batches/batch_1.csv, etc.
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     for i, batch in enumerate(batches, start=1):
         output_path = OUTPUT_DIR / f"batch_{i}.csv"
