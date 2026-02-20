@@ -1,0 +1,36 @@
+stages:
+  ingest:
+    cmd: python src/ingest.py
+    params:
+      - batch_id
+    deps:
+      - src/ingest.py
+      - data/raw_batches/
+    outs:
+      - data/bronze/bronze.csv:
+          persist: true
+      - data/bronze/ingested_batches.json:
+          persist: true
+
+  validate:
+    cmd: python src/validate.py
+    deps:
+      - src/validate.py
+      - data/bronze/bronze.csv
+    outs:
+      - data/silver/silver.csv
+    metrics:
+      - data/silver/validation_report.json:
+          cache: false
+
+  transform:
+    cmd: python src/transform.py
+    deps:
+      - src/transform.py
+      - data/silver/silver.csv
+      - config/selected_features.yaml
+    outs:
+      - data/gold/gold.csv
+    metrics:
+      - data/gold/gold_report.json:
+          cache: false

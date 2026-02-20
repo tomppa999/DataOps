@@ -1,2 +1,3 @@
 pandas>=2.0.0
 dvc[s3]
+pytest
