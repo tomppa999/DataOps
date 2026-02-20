@@ -128,7 +128,7 @@ To reproduce the state after batch *N*: check out the corresponding git commit a
 
 ## Assumptions
 
-- Only `train.csv` from the Kaggle dataset is used (per assignment).
+- Only `train.csv` from the Kaggle dataset is used (for this first assignment).
 - Prediction task: next-day `meantemp` forecasting.
-- No model training is performed — the Gold dataset is the final output.
+- No model training is performed. The Gold dataset is the final output.
 - Feature selection (`config/selected_features.yaml`) was determined once via correlation analysis and then fixed for pipeline stability.

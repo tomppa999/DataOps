@@ -1,0 +1,231 @@
+\documentclass[conference]{IEEEtran}
+\usepackage{graphicx}
+\usepackage{hyperref}
+\usepackage{booktabs}
+\usepackage{listings}
+\usepackage{xcolor}
+
+\lstset{
+  basicstyle=\ttfamily\footnotesize,
+  breaklines=true,
+  frame=single,
+  backgroundcolor=\color{gray!10},
+}
+
+\title{Assignment 3: DataOps\\Incremental Climate Data Pipeline}
+\author{
+  \IEEEauthorblockN{Tom Farnschlaeder}
+  \IEEEauthorblockA{Tampere University}
+}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+This report describes the design, implementation, and execution of a DataOps pipeline that manages the Daily Delhi Climate dataset through a Bronze--Silver--Gold architecture. The pipeline ingests five time-ordered batches incrementally, validates and cleans the data, produces an ML-ready dataset for next-day temperature forecasting, and tracks all versions using DVC. The focus is entirely on data lifecycle management; no model training is performed.
+\end{abstract}
+
+% ===========================================================================
+\section{Environment and Infrastructure}
+% ===========================================================================
+
+The pipeline runs on a \textbf{local machine} (macOS, Apple Silicon) using a Conda environment (\texttt{dataops}) with Python~3.14 and pandas.
+
+\textbf{Storage:} All data resides on the local filesystem, organized into \texttt{data/raw\_batches/}, \texttt{data/bronze/}, \texttt{data/silver/}, and \texttt{data/gold/} directories. DVC pushes content-addressed copies to a DagsHub-hosted S3-compatible remote for backup and collaboration.
+
+\textbf{Compute:} All transformations are lightweight pandas operations that complete in under two seconds per stage. No distributed compute is needed for a dataset of this size ($\sim$1\,500 rows).
+
+\textbf{Trade-offs:} A local environment provides full control and zero operational complexity, which is appropriate for this dataset scale and assignment scope. The main limitation is that the pipeline is not horizontally scalable---moving to a managed lakehouse (e.g., Databricks with Delta Lake) would be the natural next step for larger datasets. Since the upcoming ModelOps assignment builds on this pipeline, the local setup keeps iteration fast while the DagsHub remote ensures reproducibility across machines.
+
+% ===========================================================================
+\section{DataOps Tool Selection}
+% ===========================================================================
+
+\textbf{DVC (Data Version Control)} was selected as the primary DataOps tool. The rationale:
+
+\begin{itemize}
+  \item \textbf{Git-native workflow:} DVC stores lightweight \texttt{.dvc} metadata files in Git while pushing actual data to a remote. This naturally produces a versioned commit history where every batch ingestion corresponds to a Git commit with traceable data hashes.
+  \item \textbf{Declarative pipelines:} The \texttt{dvc.yaml} file defines the full DAG (Fig.~\ref{fig:dag}), and \texttt{dvc repro} automatically determines which stages need re-execution based on changed dependencies.
+  \item \textbf{Parameter tracking:} The \texttt{batch\_id} parameter in \texttt{params.yaml} is tracked by DVC, so changing it and running \texttt{dvc repro} triggers the full pipeline.
+  \item \textbf{Metric reports:} DVC natively tracks JSON metric files (\texttt{validation\_report.json}, \texttt{gold\_report.json}) with \texttt{cache: false}, making them visible in Git diffs.
+\end{itemize}
+
+\begin{figure}[h]
+  \centering
+  \includegraphics[width=0.55\linewidth]{batch0_dvc_dag.png}
+  \caption{DVC pipeline DAG: \texttt{raw\_batches} $\rightarrow$ \texttt{ingest} $\rightarrow$ \texttt{validate} $\rightarrow$ \texttt{transform}.}
+  \label{fig:dag}
+\end{figure}
+
+% ===========================================================================
+\section{Batch Splitting Strategy}
+% ===========================================================================
+
+The script \texttt{src/split.py} divides \texttt{DailyDelhiClimateTrain.csv} (1\,462 rows, Jan~2013--Apr~2017) into five time-ordered batches of approximately equal size. Before splitting, three categories of data quality issues are injected to simulate real-world conditions:
+
+\begin{enumerate}
+  \item \textbf{Row removal:} 10 randomly selected rows are dropped (seed~42).
+  \item \textbf{Row duplication:} 10 randomly selected rows are duplicated (seed~43).
+  \item \textbf{Missing values:} 5 NaN values are injected per numeric column (seed~44).
+\end{enumerate}
+
+Additionally, 2-row overlaps are introduced between consecutive batches to simulate duplicate timestamps at batch boundaries. All random operations use fixed seeds, so the split is fully deterministic and reproducible.
+
+% ===========================================================================
+\section{Incremental Ingestion Design}
+% ===========================================================================
+
+The ingestion stage (\texttt{src/ingest.py}) is controlled by a single parameter, \texttt{batch\_id}, in \texttt{params.yaml}. When triggered, it:
+
+\begin{enumerate}
+  \item Reads the corresponding \texttt{batch\_N.csv} from \texttt{data/raw\_batches/}.
+  \item \textbf{Appends} the raw rows to \texttt{data/bronze/bronze.csv}, preserving the original schema and values without any cleaning.
+  \item Records the batch ID in \texttt{ingested\_batches.json}.
+\end{enumerate}
+
+The process is \textbf{idempotent}: if a batch has already been recorded in the ingestion log, it is silently skipped. This prevents duplicate ingestion on re-runs.
+
+In the DVC pipeline, the bronze outputs use \texttt{persist: true} so that DVC does not delete them before each run, preserving the append-only semantics. The simulation proceeds by setting \texttt{batch\_id} to 1 through 5 sequentially, running \texttt{dvc repro} after each change, and committing the results. Figure~\ref{fig:batch1} shows the first pipeline execution.
+
+\begin{figure}[h]
+  \centering
+  \includegraphics[width=\linewidth]{batch1_dvc_repro.png}
+  \caption{Pipeline execution for batch~1: all three stages run, producing 296 Silver rows and 295 Gold rows.}
+  \label{fig:batch1}
+\end{figure}
+
+% ===========================================================================
+\section{Bronze--Silver--Gold Transformations}
+% ===========================================================================
+
+\subsection{Bronze $\rightarrow$ Silver (Validation and Cleaning)}
+
+The validation stage (\texttt{src/validate.py}) reads the accumulated Bronze data and applies the following steps, documented in the output \texttt{validation\_report.json}:
+
+\begin{enumerate}
+  \item \textbf{Duplicate detection and removal:} 36 rows with duplicated dates were detected across all five batches (from injected duplicates and batch overlaps); 18 were removed (keeping the first occurrence).
+  \item \textbf{Time index gap filling:} 10 missing calendar days were identified and filled by reindexing to the full date range.
+  \item \textbf{Out-of-range replacement:} Variables are checked against domain-specific ranges. \texttt{meantemp} ($-20$ to $55\,^{\circ}$C) and \texttt{humidity} (0--100\%) use hard-fail thresholds. \texttt{wind\_speed} (0--50\,km/h) and \texttt{meanpressure} (900--1100\,hPa) use soft-fail: out-of-range values are replaced with NaN and imputed. This was necessary because the original Kaggle data contains 7 clearly erroneous \texttt{meanpressure} values (e.g., $-3.04$, $12.05$, $310.44$\,hPa).
+  \item \textbf{Imputation:} 67 missing values (from injected NaNs, gap filling, and out-of-range replacement) were imputed using forward-fill followed by backward-fill.
+  \item \textbf{Feature enrichment:} Four derived features were added: \texttt{meantemp\_rolling\_7d} (7-day rolling average), \texttt{meantemp\_lag\_1} and \texttt{meantemp\_lag\_7} (lagged values), and \texttt{day\_of\_year} (seasonal signal). These features provide the temporal context needed for time-series forecasting.
+\end{enumerate}
+
+After all five batches, the Silver dataset contains 1\,462 rows spanning 2013-01-01 to 2016-12-31.
+
+\subsection{Silver $\rightarrow$ Gold (ML-Ready Dataset)}
+
+The transform stage (\texttt{src/transform.py}) produces the Gold dataset:
+
+\begin{enumerate}
+  \item \textbf{Feature selection:} Columns to retain are read from \texttt{config/selected\_features.yaml}, which was determined once via a correlation analysis (\texttt{src/analyze\_correlations.py}). All four original climate variables plus the four derived features are kept, as none showed redundant ($|r| > 0.9$) inter-feature correlations that would justify dropping.
+  \item \textbf{Target creation:} A \texttt{target} column is created by shifting \texttt{meantemp} by $-1$ day, framing the task as next-day temperature prediction. The last row is dropped (no next-day value available).
+  \item \textbf{Validation:} The Gold dataset is checked for NaN values, presence of the target column, and non-emptiness before writing.
+\end{enumerate}
+
+The final Gold dataset contains \textbf{1\,461 rows} with 8 feature columns and 1 target column (Table~\ref{tab:gold}).
+
+\begin{table}[h]
+  \centering
+  \caption{Gold dataset summary.}
+  \label{tab:gold}
+  \begin{tabular}{ll}
+    \toprule
+    Property & Value \\
+    \midrule
+    Prediction task & Next-day \texttt{meantemp} \\
+    Rows & 1\,461 \\
+    Date range & 2013-01-01 to 2016-12-31 \\
+    Features & 8 (+ date, target) \\
+    Target mean $\pm$ std & $25.50 \pm 7.34\,^{\circ}$C \\
+    Target range & $6.00$--$38.71\,^{\circ}$C \\
+    NaN values & 0 \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+% ===========================================================================
+\section{Data Validation and Testing}
+% ===========================================================================
+
+A pytest test suite (\texttt{tests/test\_validation.py}) containing \textbf{21 tests} is executed after every pipeline run. The tests are organized by layer:
+
+\textbf{Bronze (4 tests):} File existence, expected schema (\texttt{date}, \texttt{meantemp}, \texttt{humidity}, \texttt{wind\_speed}, \texttt{meanpressure}), non-emptiness, and ingestion log consistency.
+
+\textbf{Silver (7 tests):} No duplicate dates, continuous time index (every calendar day present), ascending date order, no NaN values in core columns, all values within domain ranges, derived features present, and validation report status.
+
+\textbf{Gold (7 tests):} No NaN values, non-emptiness, target column existence, target correctness (verified by recomputing the shift), feature columns match the report, non-trivial date range ($\geq$30 days), and report/data row count agreement.
+
+\textbf{Cross-layer (3 tests):} Silver date range is contained within Bronze, Gold date range is contained within Silver, and Silver has at least as many unique dates as Bronze (verifying no silent data loss).
+
+All 21 tests pass after every batch (Fig.~\ref{fig:tests}).
+
+\begin{figure}[h]
+  \centering
+  \includegraphics[width=\linewidth]{batch5_tests.png}
+  \caption{All 21 data quality tests passing after batch~5 ingestion.}
+  \label{fig:tests}
+\end{figure}
+
+% ===========================================================================
+\section{Versioning and Reproducibility}
+% ===========================================================================
+
+Every batch ingestion produces a Git commit containing updated \texttt{dvc.lock} (with MD5 hashes of all stage inputs and outputs), \texttt{params.yaml}, and the JSON metric reports. Figure~\ref{fig:gitlog} shows the resulting commit history.
+
+\begin{figure}[h]
+  \centering
+  \includegraphics[width=\linewidth]{git_log.png}
+  \caption{Git commit history showing five batch ingestion commits, each with distinct \texttt{dvc.lock} hashes.}
+  \label{fig:gitlog}
+\end{figure}
+
+To reproduce the state of the data after any batch $N$:
+
+\begin{lstlisting}
+git checkout <batch-N-commit>
+dvc checkout
+\end{lstlisting}
+
+This restores the exact Bronze, Silver, and Gold files for that point in time, verified by the content hashes in \texttt{dvc.lock}.
+
+Figure~\ref{fig:diff} shows the output of \texttt{dvc diff HEAD\textasciitilde4}, confirming that all four data files (\texttt{bronze.csv}, \texttt{ingested\_batches.json}, \texttt{silver.csv}, \texttt{gold.csv}) evolved between batch~1 and batch~5.
+
+\begin{figure}[h]
+  \centering
+  \includegraphics[width=0.7\linewidth]{dvc_diff.png}
+  \caption{\texttt{dvc diff} between batch~1 and batch~5 commits.}
+  \label{fig:diff}
+\end{figure}
+
+Additional reproducibility mechanisms include:
+\begin{itemize}
+  \item \textbf{Fixed random seeds} in \texttt{split.py} (42, 43, 44) ensure identical batches on any machine.
+  \item \textbf{Idempotent ingestion} prevents accidental double-ingestion.
+  \item \textbf{DVC remote} (DagsHub S3) stores all data versions, enabling \texttt{dvc pull} on a fresh clone.
+  \item \textbf{Declarative pipeline} (\texttt{dvc.yaml}) ensures \texttt{dvc repro} re-executes only stages whose dependencies changed (Fig.~\ref{fig:batch5}).
+\end{itemize}
+
+\begin{figure}[h]
+  \centering
+  \includegraphics[width=\linewidth]{batch5_dvc_repro.png}
+  \caption{Batch~5 pipeline run: \texttt{ingest} is skipped (already ingested), \texttt{validate} and \texttt{transform} re-run due to code change in \texttt{validate.py}.}
+  \label{fig:batch5}
+\end{figure}
+
+% ===========================================================================
+\section{Limitations and Assumptions}
+% ===========================================================================
+
+\begin{itemize}
+  \item Only \texttt{train.csv} is used, per the assignment constraints.
+  \item The prediction task (next-day \texttt{meantemp}) was chosen based on domain relevance; no model training is performed.
+  \item Feature selection was determined once via correlation analysis and then fixed in \texttt{config/selected\_features.yaml} for pipeline stability. All original variables were retained because none exhibited redundant inter-feature correlations ($|r| > 0.9$).
+  \item Lag features at the start of the dataset are back-filled, which introduces a minor information leak for the first 7 rows. This is acceptable given the dataset size and will be handled during train/test splitting in the ModelOps assignment.
+  \item The \texttt{meanpressure} column in the original Kaggle data contains clearly erroneous values (e.g., $-3.04$, $12.05$\,hPa). These are replaced with NaN and forward-filled rather than dropped, to preserve temporal continuity.
+  \item Scaling, normalization, and train/test splitting are intentionally deferred to the ModelOps stage, as the Gold dataset serves as input for the subsequent assignment.
+\end{itemize}
+
+\section*{Repository}
+\url{https://dagshub.com/tomppa999/DataOps}
+
+\end{document}
