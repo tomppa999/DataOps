@@ -1,0 +1,5 @@
+outs:
+- md5: 6bdfcd95ad4b9ebf357a55e1107f2d92
+  size: 78199
+  hash: md5
+  path: DailyDelhiClimateTrain.csv

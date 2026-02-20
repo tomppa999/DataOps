@@ -1,0 +1,6 @@
+outs:
+- md5: 1f09f955750b927f46924cd08048e144.dir
+  size: 77397
+  nfiles: 5
+  hash: md5
+  path: raw_batches

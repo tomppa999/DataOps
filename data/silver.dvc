@@ -1,0 +1,6 @@
+outs:
+- md5: 8881ecd042fb7b5ba1823b28807254a3.dir
+  size: 44977
+  nfiles: 2
+  hash: md5
+  path: silver
