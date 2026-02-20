@@ -14,36 +14,36 @@ stages:
       size: 2712
     params:
       params.yaml:
-        batch_id: 4
+        batch_id: 5
     outs:
     - path: data/bronze/bronze.csv
       hash: md5
-      md5: bc17c3292473d930389ebcf08602d4e7
-      size: 58356
+      md5: 373fa00f720cd964d25639f6c9d45fef
+      size: 77209
     - path: data/bronze/ingested_batches.json
       hash: md5
-      md5: 41f8257e1a53e9bb212091b05974364b
-      size: 22
+      md5: d1a156197caac3b2b0d563fe99164dd6
+      size: 27
   validate:
     cmd: python src/validate.py
     deps:
     - path: data/bronze/bronze.csv
       hash: md5
-      md5: bc17c3292473d930389ebcf08602d4e7
-      size: 58356
+      md5: 373fa00f720cd964d25639f6c9d45fef
+      size: 77209
     - path: src/validate.py
       hash: md5
-      md5: 99856a010980c5c1a4835fd1397207e3
-      size: 9681
+      md5: 52ebee530f1c97d531e9bde9b6688323
+      size: 10320
     outs:
     - path: data/silver/silver.csv
       hash: md5
-      md5: dae53962cc567e7d30fed285f3f691c9
-      size: 79636
+      md5: fa9898c0bf1957e91428d26ca1736f26
+      size: 99453
     - path: data/silver/validation_report.json
       hash: md5
-      md5: dee17944e9526a5c57bb76571a142549
-      size: 1060
+      md5: 14e03811cf10365a3877d4747c4a118d
+      size: 1246
   transform:
     cmd: python src/transform.py
     deps:
@@ -53,8 +53,8 @@ stages:
       size: 300
     - path: data/silver/silver.csv
       hash: md5
-      md5: dae53962cc567e7d30fed285f3f691c9
-      size: 79636
+      md5: fa9898c0bf1957e91428d26ca1736f26
+      size: 99453
     - path: src/transform.py
       hash: md5
       md5: 6b7fa310e115b0a1e1008d32e117556f
@@ -62,9 +62,9 @@ stages:
     outs:
     - path: data/gold/gold.csv
       hash: md5
-      md5: 058e2444e8de5e4734c10332f71879dc
-      size: 85903
+      md5: 809433d2a83e2b8ebf957fd40cfd03a9
+      size: 107338
     - path: data/gold/gold_report.json
       hash: md5
-      md5: fb44be502c754b98156da5f0be337ad1
+      md5: ae9f4ba6dd7dafe6698f833cee285119
       size: 636

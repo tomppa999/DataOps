@@ -172,8 +172,21 @@ def clean_data(df: pd.DataFrame, date_col: str, report: dict) -> pd.DataFrame:
     if n_missing_dates_added > 0:
         logger.info("Added %d rows for missing dates", n_missing_dates_added)
 
-    # Impute missing numeric values: forward-fill then backward-fill
+    # Replace soft-fail out-of-range values with NaN (to be imputed below)
     numeric_cols = [c for c in df.columns if c != date_col]
+    report["soft_range_replacements"] = {}
+    for col in numeric_cols:
+        if col in VALUE_RANGES:
+            min_val, max_val, hard_fail = VALUE_RANGES[col]
+            if not hard_fail:
+                mask = (df[col] < min_val) | (df[col] > max_val)
+                n_replaced = mask.sum()
+                if n_replaced > 0:
+                    df.loc[mask, col] = float("nan")
+                    report["soft_range_replacements"][col] = int(n_replaced)
+                    logger.info("Replaced %d out-of-range values in %s with NaN", n_replaced, col)
+
+    # Impute missing numeric values: forward-fill then backward-fill
     missing_before = {}
     for col in numeric_cols:
         n = df[col].isna().sum()
