@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """
-Silver validation and cleaning pipeline.
+Silver validation, cleaning, and enrichment pipeline.
 
-Reads bronze data, validates, cleans, and outputs silver data with a validation report.
+Reads bronze data, validates, cleans, adds derived features, and outputs
+silver data with a validation report.
 """
 
 import json
@@ -192,7 +193,10 @@ def clean_data(df: pd.DataFrame, date_col: str, report: dict) -> pd.DataFrame:
     rows_out = len(df)
     report["rows_out"] = rows_out
 
-    # Min/max per variable for report
+    # Round numeric columns to 2 decimals
+    df[numeric_cols] = df[numeric_cols].round(2)
+
+    # Min/max per variable for report (after rounding)
     report["min_max"] = {}
     for col in numeric_cols:
         if col in df.columns:
@@ -204,8 +208,23 @@ def clean_data(df: pd.DataFrame, date_col: str, report: dict) -> pd.DataFrame:
     return df
 
 
+def add_derived_features(df: pd.DataFrame, date_col: str) -> pd.DataFrame:
+    """Create weather-derived features from the cleaned Silver data."""
+    df = df.sort_values(date_col).reset_index(drop=True)
+
+    df["meantemp_rolling_7d"] = df["meantemp"].rolling(window=7, min_periods=1).mean()
+    df["meantemp_lag_1"] = df["meantemp"].shift(1)
+    df["meantemp_lag_7"] = df["meantemp"].shift(7)
+    df["day_of_year"] = pd.to_datetime(df[date_col]).dt.dayofyear
+
+    df["meantemp_lag_1"] = df["meantemp_lag_1"].bfill()
+    df["meantemp_lag_7"] = df["meantemp_lag_7"].bfill()
+
+    return df
+
+
 def main() -> None:
-    """Run validation and cleaning pipeline."""
+    """Run validation, cleaning, and enrichment pipeline."""
     bronze_path = Path(__file__).resolve().parent.parent / BRONZE_PATH
     if not bronze_path.exists():
         logger.error("Bronze file not found: %s", bronze_path)
@@ -231,7 +250,12 @@ def main() -> None:
     df_clean = clean_data(df, date_col, report)
     report["validation_passed"] = True
 
-    # Ensure deterministic output: sort by date
+    logger.info("Adding derived features")
+    df_clean = add_derived_features(df_clean, date_col)
+    derived_cols = ["meantemp_rolling_7d", "meantemp_lag_1", "meantemp_lag_7", "day_of_year"]
+    report["enrichment"] = {"derived_columns": derived_cols}
+    logger.info("Added derived columns: %s", derived_cols)
+
     df_clean = df_clean.sort_values(date_col).reset_index(drop=True)
 
     df_clean.to_csv(silver_csv, index=False)

@@ -1,0 +1,12 @@
+# Columns to keep in enriched Silver output (order preserved).
+# Determined once via analyze_correlations.py, then fixed for pipeline stability.
+features:
+  - date
+  - meantemp
+  - humidity
+  - wind_speed
+  - meanpressure
+  - meantemp_rolling_7d
+  - meantemp_lag_1
+  - meantemp_lag_7
+  - day_of_year
